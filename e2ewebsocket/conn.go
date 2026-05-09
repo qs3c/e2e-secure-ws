@@ -29,6 +29,8 @@ type Conn struct {
 	connMu   sync.Mutex
 	connCond *sync.Cond
 	closed   bool
+
+	recovery recoveryState
 }
 
 func NewSecureConn(config *Config, imParser im_parser.IMParser) (*Conn, error) {
@@ -40,6 +42,7 @@ func NewSecureConn(config *Config, imParser im_parser.IMParser) (*Conn, error) {
 		msgChan:  make(chan readMsgItem, 128),
 		imParser: imParser,
 	}
+	c.initRecovery()
 	c.connCond = sync.NewCond(&c.connMu)
 	go c.readLoop()
 	return c, nil
@@ -240,6 +243,7 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 			return nil
 		}
 		if !handshakeComplete && !session.in.hasCipher() {
+			c.markLostInbound(session, peerID, msgType, msgData, "stale payload before handshake")
 			log.Printf("readLoop dropping stale secure payload before handshake completion for session %s, unexpected type: %d", sessionId, typ)
 			return nil
 		}
@@ -258,6 +262,11 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 		c.closeSessionLocally(session, errors.New("received alert"))
 		return nil
 	case recordTypeApplicationData:
+		if !handshakeComplete && !session.in.hasCipher() {
+			c.markLostInbound(session, peerID, msgType, msgData, "application data before handshake")
+			log.Printf("readLoop dropping stale application payload before handshake completion for session %s", sessionId)
+			return nil
+		}
 		if !handshakeComplete && loaded {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -288,16 +297,17 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 			c.terminateSession(session, err)
 			return nil
 		}
-		c.msgChan <- readMsgItem{
+		c.deliverApplication(sessionId, c.messageRef(msgData), readMsgItem{
 			sessionId: sessionId,
 			remoteId:  peerID,
 			msgType:   msgType,
 			msg:       msgDataBytes,
-		}
+		})
 	case recordTypeHandshake:
 		if !isPlaintextHandshakeMessage(data) {
 			log.Printf("readLoop invalid plaintext handshake for session %s", session.id)
 			if !handshakeComplete && !session.in.hasCipher() {
+				c.markLostInbound(session, peerID, msgType, msgData, "stale encrypted payload looked like handshake")
 				log.Printf("readLoop dropping stale encrypted payload that looked like handshake for session %s", session.id)
 				return nil
 			}
@@ -333,6 +343,24 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 			c.terminateSession(session, errors.New("change cipher failed"))
 			return nil
 		}
+	case recordTypeSecureControl:
+		if !handshakeComplete && loaded {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			if !session.isHandshakeComplete.Load() {
+				log.Printf("readLoop waiting for handshake completion before control for session %s...", sessionId)
+				select {
+				case <-session.handshakeComplete:
+				case <-ctx.Done():
+					log.Printf("readLoop control handshake wait timeout for session %s", sessionId)
+					return nil
+				case <-session.done:
+					return nil
+				}
+			}
+		}
+		c.handleSecureControl(session, peerID, data)
 	}
 	return nil
 }
@@ -478,6 +506,7 @@ func (c *Conn) WriteMessage(messageType int, message []byte) error {
 		return err
 	}
 
+	c.cacheOutboundMessage(msgData)
 	err = c.writeRecordLocked(recordTypeApplicationData, msgData, session)
 	if err != nil {
 		return c.Close()

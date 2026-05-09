@@ -109,6 +109,7 @@ const (
 	recordTypeHandshake        recordType = 22
 	recordTypeApplicationData  recordType = 23
 	recordTypeChangeCipherSpec recordType = 24
+	recordTypeSecureControl    recordType = 25
 )
 
 type RenegotiationSupport int

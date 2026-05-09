@@ -103,3 +103,24 @@ func (m *MsgData) ReadReqIdentifier() int32 {
 	}
 	return m.Resp.ReqIdentifier
 }
+
+func (m *MsgData) GetClientMsgID() string {
+	if m == nil || m.MsgData == nil {
+		return ""
+	}
+	return m.ClientMsgID
+}
+
+func (m *MsgData) GetServerMsgID() string {
+	if m == nil || m.MsgData == nil {
+		return ""
+	}
+	return m.ServerMsgID
+}
+
+func (m *MsgData) GetSeq() int64 {
+	if m == nil || m.MsgData == nil {
+		return 0
+	}
+	return m.Seq
+}
