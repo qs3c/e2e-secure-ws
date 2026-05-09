@@ -420,6 +420,12 @@ func (hc *halfConn) explicitNonceLen() int {
 // 64位序列号自增，每次加密/解密成功后调用
 // hc.seq 一般作为 aead 中的 additional data 的部分起到校验的作用
 // 有时也作为 nonce
+func (hc *halfConn) hasCipher() bool {
+	hc.Lock()
+	defer hc.Unlock()
+	return hc.cipher != nil
+}
+
 func (hc *halfConn) incSeq() {
 	// 64位无符号序列号的安全递增操作
 	// 从最低位开始加1，如果不发生进位则直接结束

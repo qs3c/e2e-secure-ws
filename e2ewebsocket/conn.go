@@ -205,12 +205,16 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 		}(session)
 	}
 
+	originalContent := append([]byte(nil), msgData.GetContent()...)
 	handshakeComplete := session.isHandshakeComplete.Load()
-	plaintext, err := session.in.decrypt(msgData.GetContent())
+	plaintext, err := session.in.decrypt(originalContent)
 	if err != nil {
 		log.Printf("readLoop decrypt error for session %s: %v", sessionId, err)
 		if c.shouldDropSecureInbound(msgData) {
 			log.Printf("readLoop dropping undecryptable synced secure payload for session %s", sessionId)
+			return nil
+		}
+		if c.tryResetSessionFromPlaintextHello(originalContent, session, peerID, sessionId, err) {
 			return nil
 		}
 		c.terminateSession(session, err)
@@ -233,6 +237,10 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 	default:
 		log.Printf("readLoop unexpected message type: %d", typ)
 		if c.shouldDropSecureInbound(msgData) {
+			return nil
+		}
+		if !handshakeComplete && !session.in.hasCipher() {
+			log.Printf("readLoop dropping stale secure payload before handshake completion for session %s, unexpected type: %d", sessionId, typ)
 			return nil
 		}
 		c.terminateSession(session, errors.New("UnexpectedMessage"))
@@ -287,6 +295,18 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 			msg:       msgDataBytes,
 		}
 	case recordTypeHandshake:
+		if !isPlaintextHandshakeMessage(data) {
+			log.Printf("readLoop invalid plaintext handshake for session %s", session.id)
+			if !handshakeComplete && !session.in.hasCipher() {
+				log.Printf("readLoop dropping stale encrypted payload that looked like handshake for session %s", session.id)
+				return nil
+			}
+			if c.shouldDropSecureInbound(msgData) {
+				return nil
+			}
+			c.terminateSession(session, errors.New("alertUnexpectedMessage"))
+			return nil
+		}
 		select {
 		case session.handshakeChan <- sessionMsg{typ: recordTypeHandshake, data: data}:
 		default:
@@ -315,6 +335,71 @@ func (c *Conn) handleReadBoundMsg(msgType int, msgData im_parser.MsgData) error 
 		}
 	}
 	return nil
+}
+
+func (c *Conn) tryResetSessionFromPlaintextHello(content []byte, oldSession *Session, peerID string, sessionId SessionID, reason error) bool {
+	if !isPlaintextHelloRecord(content) {
+		return false
+	}
+
+	log.Printf("readLoop detected plaintext hello for session %s after decrypt failure (%v), resetting stale session", sessionId, reason)
+	if oldSession != nil {
+		oldSession.Close()
+		c.sessions.Delete(oldSession.id)
+	}
+
+	fresh := NewSession(sessionId, peerID, c)
+	c.sessions.Store(sessionId, fresh)
+
+	data := append([]byte(nil), content[1:]...)
+	select {
+	case fresh.handshakeChan <- sessionMsg{typ: recordTypeHandshake, data: data}:
+	default:
+		log.Printf("readLoop reset handshake channel blocked for session %s", sessionId)
+		fresh.Close()
+		c.sessions.Delete(sessionId)
+		return true
+	}
+
+	go func(s *Session) {
+		if err := s.Handshake(); err != nil {
+			log.Printf("Passive handshake failed for reset session %s: %v", s.id, err)
+		}
+	}(fresh)
+	return true
+}
+
+func isPlaintextHelloRecord(content []byte) bool {
+	if len(content) < 2 || recordType(content[0]) != recordTypeHandshake {
+		return false
+	}
+	msg, ok := parsePlaintextHandshakeMessage(content[1:]).(*helloMsg)
+	return ok && msg != nil
+}
+
+func isPlaintextHandshakeMessage(data []byte) bool {
+	return parsePlaintextHandshakeMessage(data) != nil
+}
+
+func parsePlaintextHandshakeMessage(data []byte) handshakeMessage {
+	if len(data) == 0 {
+		return nil
+	}
+	var msg handshakeMessage
+	switch data[0] {
+	case typeHelloMsg:
+		msg = new(helloMsg)
+	case typeKeyExchange:
+		msg = new(keyExchangeMsg)
+	case typeFinished:
+		msg = new(finishedMsg)
+	default:
+		return nil
+	}
+	if !msg.unmarshal(append([]byte(nil), data...)) {
+		return nil
+	}
+	return msg
 }
 
 func (c *Conn) inboundPeerID(msgData im_parser.MsgData) string {

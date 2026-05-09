@@ -43,3 +43,26 @@ func TestShouldDropSecureSelfEcho(t *testing.T) {
 		t.Fatal("expected self-chat message not to be classified as sender echo")
 	}
 }
+
+func TestPlaintextHelloRecordDetected(t *testing.T) {
+	conn := &Conn{hostId: "alice", config: defaultConfig()}
+	session := NewSession(getSessionID("alice", "bob"), "bob", conn)
+	hello, err := session.makeHello()
+	if err != nil {
+		t.Fatalf("makeHello() error = %v", err)
+	}
+	helloBytes, err := hello.marshal()
+	if err != nil {
+		t.Fatalf("hello.marshal() error = %v", err)
+	}
+
+	record := append([]byte{byte(recordTypeHandshake)}, helloBytes...)
+	if !isPlaintextHelloRecord(record) {
+		t.Fatal("expected plaintext hello record to be detected")
+	}
+
+	badRecord := append([]byte{byte(recordTypeHandshake)}, []byte{0, 1, 2, 3}...)
+	if isPlaintextHelloRecord(badRecord) {
+		t.Fatal("expected malformed handshake record not to be detected as hello")
+	}
+}
