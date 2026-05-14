@@ -2,9 +2,19 @@
 /third_party/tongsuo-build/
 /third_party/tongsuo-build-*/
 /third_party/tongsuo-install/
+/third_party/Tongsuo-master/
+/third_party/tongsuo-pq-build/
+/third_party/tongsuo-pq-build-*/
+/third_party/tongsuo-pq-install/
 /third_party/fake-bin/
+/third_party/openHiTLS-openhitls-*/
+/third_party/openhitls/
 /third_party/tongsuo/Pod/
 /crypto/sm2keyexch/android/
+/crypto/sm2mlkem/*.dll
+/crypto/sm2mlkem/*.dylib
+/crypto/sm2mlkem/*.so
+/crypto/sm2mlkem/*.exp
 
 # Build artifacts
 *.o

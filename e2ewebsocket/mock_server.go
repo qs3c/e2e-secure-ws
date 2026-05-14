@@ -135,6 +135,8 @@ func setupKeyStore(t *testing.T, baseDir, id string) {
 	if err := os.WriteFile(filepath.Join(dir, "public_key.pem"), pemPub, 0o644); err != nil {
 		t.Fatal(err)
 	}
+
+	setupSM2MLKEMKeyStore(t, dir)
 }
 
 func makeAppMsg(t *testing.T, from, to string, content []byte) []byte {

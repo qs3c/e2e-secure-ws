@@ -8,9 +8,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"path/filepath"
-
-	ccrypto "github.com/qs3c/e2e-secure-ws/crypto"
 )
 
 // type clientHandshakeState struct {
@@ -320,29 +317,9 @@ func (hs *handshakeState) doFullHandshake() error {
 	// 必须为当前握手创建一个新实例（副本），
 	// 因为它包含 session 特有的状态（localId, remoteId, keys, ctxLocal 等）。
 	// 原 suite.ka 是全局单例，不能直接修改。
-	var keyAgreement keyAgreement
-
-	switch hs.suite.ka.(type) {
-	case *sm2KeyAgreement:
-		// 加载密钥
-		localPrivateKey, err := ccrypto.LoadPrivateKeyFileFromPEM(filepath.Join(s.conn.config.keyStorePath(), hs.localId, "private_key.pem"))
-		if err != nil {
-			return err
-		}
-		remotePublicKey, err := ccrypto.LoadPublicKeyFileFromPEM(filepath.Join(s.conn.config.keyStorePath(), hs.remoteId, "public_key.pem"))
-		if err != nil {
-			return err
-		}
-
-		// 创建新的 SM2 KeyAgreement 实例
-		// 使用 NewSM2KeyAgreement 构造函数来初始化内部的 KAPCtx 等
-		newKA := NewSM2KeyAgreement(localPrivateKey, hs.localId, remotePublicKey, hs.remoteId)
-		if newKA == nil {
-			return errors.New("failed to initialize SM2 Key Agreement")
-		}
-		keyAgreement = newKA
-	default:
-		return fmt.Errorf("internal error: unsupported key agreement type: %T", hs.suite.ka)
+	keyAgreement, err := hs.newKeyAgreement()
+	if err != nil {
+		return err
 	}
 	// 先发自己的 keyExchangeMsg
 	localKxm, err := keyAgreement.generateLocalKeyExchange(s.conn.config, hs.signatureScheme, hs.helloMsg, hs.remoteHelloMsg)
