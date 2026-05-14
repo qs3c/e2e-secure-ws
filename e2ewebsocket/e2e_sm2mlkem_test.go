@@ -32,10 +32,10 @@ func TestE2E_SM2MLKEMHandshakeAndMessage(t *testing.T) {
 	parser := openimmarshal.NewOpenIMParser(encoder.NewGobEncoder(), mockComp)
 	newConn := func(hostID string) *Conn {
 		conn, err := NewSecureConn(&Config{
-			KeyStorePath: keyStorePath,
-			CipherSuites: []uint16{E2E_SM2MLKEM768_WITH_SM4_128_GCM_SM3},
-			Compressor:   mockComp,
-			Encoder:      encoder.NewGobEncoder(),
+			KeyStorePath:   keyStorePath,
+			EnableSM2MLKEM: true,
+			Compressor:     mockComp,
+			Encoder:        encoder.NewGobEncoder(),
 		}, parser)
 		if err != nil {
 			t.Fatalf("[%s] NewSecureConn failed: %v", hostID, err)

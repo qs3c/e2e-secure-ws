@@ -168,6 +168,10 @@ type Config struct {
 
 	CipherSuites []uint16
 
+	// EnableSM2MLKEM enables SM2 + ML-KEM hybrid key agreement in the default
+	// cipher suite list when the binary is built with the sm2mlkem tag.
+	EnableSM2MLKEM bool
+
 	CurvePreferences          []CurveID
 	SignatureSchemePreference []SignatureScheme
 
@@ -214,13 +218,13 @@ func (c *Config) encoder() encoder.Encoder {
 
 func (c *Config) cipherSuites() []uint16 {
 	if c.CipherSuites == nil {
-		return defaultCipherSuites()
+		return defaultCipherSuites(c)
 	}
 	return c.CipherSuites
 }
 
-func defaultCipherSuites() []uint16 {
-	return cipherSuitesPreferenceOrder
+func defaultCipherSuites(c *Config) []uint16 {
+	return defaultCipherSuitesForConfig(c, cipherSuitesPreferenceOrder)
 }
 
 func (c *Config) supportedSignatureAlgorithms() []SignatureScheme {
