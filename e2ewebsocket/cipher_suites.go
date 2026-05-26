@@ -184,6 +184,17 @@ func cipherSuiteByID(id uint16) *cipherSuite {
 	return suite
 }
 
+func cipherSuiteDebugName(id uint16) string {
+	switch id {
+	case E2E_SM2KEYAGREEMENT_WITH_SM4_128_GCM_SM3:
+		return "SM2_KEY_AGREEMENT_SM4_128_GCM_SM3"
+	case 0x0031:
+		return "SM2_MLKEM768_SM4_128_GCM_SM3"
+	default:
+		return fmt.Sprintf("UNKNOWN_0x%04x", id)
+	}
+}
+
 var sm2KA = &sm2KeyAgreement{}
 
 // func sm2KA(version uint16) keyAgreement {

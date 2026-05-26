@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log"
+	"time"
 )
 
 // type clientHandshakeState struct {
@@ -53,6 +55,38 @@ type handshakeState struct {
 	masterSecret    []byte
 }
 
+func logHandshakePerfDetail(localID, remoteID, role, suite string, suiteID uint16, handshakeNo int, category, phase string, duration time.Duration, err error) {
+	if role == "" {
+		role = "unknown"
+	}
+	if suite == "" {
+		suite = "unselected"
+	}
+	status := "success"
+	if err != nil {
+		status = "failure"
+	}
+	durationUS := duration.Microseconds()
+	if err != nil {
+		log.Printf("SECURE_WS_PERF_DETAIL category=%s phase=%s status=%s local=%s remote=%s role=%s suite=%s suite_id=0x%04x handshake_no=%d duration_us=%d duration_ms=%.3f err=%v",
+			category, phase, status, localID, remoteID, role, suite, suiteID, handshakeNo, durationUS, float64(durationUS)/1000.0, err)
+		return
+	}
+	log.Printf("SECURE_WS_PERF_DETAIL category=%s phase=%s status=%s local=%s remote=%s role=%s suite=%s suite_id=0x%04x handshake_no=%d duration_us=%d duration_ms=%.3f",
+		category, phase, status, localID, remoteID, role, suite, suiteID, handshakeNo, durationUS, float64(durationUS)/1000.0)
+}
+
+func (hs *handshakeState) perfMeta() (role string, suite string, suiteID uint16) {
+	role = "responder"
+	if hs.localId > hs.remoteId {
+		role = "initiator"
+	}
+	if hs.suite == nil {
+		return role, "unselected", 0
+	}
+	return role, cipherSuiteDebugName(hs.suite.id), hs.suite.id
+}
+
 // 原先的三个来在 conn 的过渡方法现在要归属于 session 了
 func (s *Session) symHandshake(ctx context.Context) (err error) {
 
@@ -60,19 +94,31 @@ func (s *Session) symHandshake(ctx context.Context) (err error) {
 		s.conn.config = defaultConfig()
 	}
 
+	localID := s.conn.hostId
+	remoteID := s.remoteId
+	handshakeNo := s.handshakes + 1
+	totalStart := time.Now()
+
 	// 【第一大步：生成本地 Hello 消息】
+	phaseStart := time.Now()
 	hello, err := s.makeHello()
+	logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "compute", "hello_make_local", time.Since(phaseStart), err)
 	if err != nil {
 		return err
 	}
 
 	// 【第二大步：发送本地 Hello 消息】
+	phaseStart = time.Now()
 	if err := s.writeHandshakeRecord(hello, nil); err != nil {
+		logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "send", "hello_write_local", time.Since(phaseStart), err)
 		return err
 	}
+	logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "send", "hello_write_local", time.Since(phaseStart), nil)
 
 	// 【第三大步：接收对端 Hello 消息】
+	phaseStart = time.Now()
 	msg, err := s.readHandshake(nil)
+	logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "wait", "hello_wait_remote", time.Since(phaseStart), err)
 	if err != nil {
 		return err
 	}
@@ -81,13 +127,19 @@ func (s *Session) symHandshake(ctx context.Context) (err error) {
 	if !ok {
 		// s.out.setErrorLocked(errors.New("alertUnexpectedMessage"))
 		// s.SetError(errors.New("unexpectedMessageError"))
-		return errors.New("unexpectedMessageError")
-	}
-
-	// 选出来的版本直接记到 Conn 里面了
-	if err := s.pickE2EVersion(remoteHello); err != nil {
+		err := errors.New("unexpectedMessageError")
+		logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "control", "hello_parse_remote", 0, err)
 		return err
 	}
+	logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "control", "hello_parse_remote", 0, nil)
+
+	// 选出来的版本直接记到 Conn 里面了
+	phaseStart = time.Now()
+	if err := s.pickE2EVersion(remoteHello); err != nil {
+		logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "control", "version_select", time.Since(phaseStart), err)
+		return err
+	}
+	logHandshakePerfDetail(localID, remoteID, "unknown", "unselected", 0, handshakeNo, "control", "version_select", time.Since(phaseStart), nil)
 
 	// 后续如果改到 Session 下，相当于每个握手 Session 都有自己独立的 handshakeState
 	hs := &handshakeState{
@@ -100,7 +152,10 @@ func (s *Session) symHandshake(ctx context.Context) (err error) {
 	}
 	// 把自己构建发送的 hello 消息和接收的对端 hello 消息都挂在了 hs 上
 	// 供后续 handshake 时 processHello 使用
-	return hs.handshake()
+	err = hs.handshake()
+	role, suite, suiteID := hs.perfMeta()
+	logHandshakePerfDetail(localID, remoteID, role, suite, suiteID, handshakeNo, "total", "handshake_total", time.Since(totalStart), err)
+	return err
 }
 
 func (s *Session) makeHello() (*helloMsg, error) {
@@ -189,7 +244,10 @@ func (s *Session) pickE2EVersion(remoteHello *helloMsg) error {
 func (hs *handshakeState) handshake() error {
 	s := hs.s
 
+	phaseStart := time.Now()
 	err := hs.processHello()
+	role, suite, suiteID := hs.perfMeta()
+	logHandshakePerfDetail(hs.localId, hs.remoteId, role, suite, suiteID, s.handshakes+1, "control", "process_hello", time.Since(phaseStart), err)
 	if err != nil {
 		return err
 	}
@@ -215,15 +273,37 @@ func (hs *handshakeState) handshake() error {
 		}
 	}
 
+	kaStart := time.Now()
+	kaSuite := cipherSuiteDebugName(hs.suite.id)
+	kaRole := "responder"
+	if hs.localId > hs.remoteId {
+		kaRole = "initiator"
+	}
+	log.Printf("SECURE_WS_PERF key_agreement_start local=%s remote=%s role=%s suite=%s suite_id=0x%04x handshake_no=%d", hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1)
+
 	if err := hs.doFullHandshake(); err != nil {
+		log.Printf("SECURE_WS_PERF key_agreement_failure local=%s remote=%s role=%s suite=%s suite_id=0x%04x handshake_no=%d phase=do_full_handshake duration_us=%d duration_ms=%.3f err=%v",
+			hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, time.Since(kaStart).Microseconds(), float64(time.Since(kaStart).Microseconds())/1000.0, err)
 		return err
 	}
+	phaseStart = time.Now()
 	if err := hs.establishKeys(); err != nil {
+		logHandshakePerfDetail(hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, "compute", "traffic_keys_establish", time.Since(phaseStart), err)
+		log.Printf("SECURE_WS_PERF key_agreement_failure local=%s remote=%s role=%s suite=%s suite_id=0x%04x handshake_no=%d phase=establish_keys duration_us=%d duration_ms=%.3f err=%v",
+			hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, time.Since(kaStart).Microseconds(), float64(time.Since(kaStart).Microseconds())/1000.0, err)
 		return err
 	}
+	logHandshakePerfDetail(hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, "compute", "traffic_keys_establish", time.Since(phaseStart), nil)
+	kaDuration := time.Since(kaStart)
+	log.Printf("SECURE_WS_PERF key_agreement_success local=%s remote=%s role=%s suite=%s suite_id=0x%04x handshake_no=%d duration_us=%d duration_ms=%.3f",
+		hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, kaDuration.Microseconds(), float64(kaDuration.Microseconds())/1000.0)
+
+	phaseStart = time.Now()
 	if err := hs.sendFinished(s.localFinished[:]); err != nil {
+		logHandshakePerfDetail(hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, "send", "finished_write_local", time.Since(phaseStart), err)
 		return err
 	}
+	logHandshakePerfDetail(hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, "send", "finished_write_local", time.Since(phaseStart), nil)
 
 	// if _, err := c.flush(); err != nil {
 	// 	return err
@@ -234,9 +314,12 @@ func (hs *handshakeState) handshake() error {
 	// 	return err
 	// }
 
+	phaseStart = time.Now()
 	if err := hs.readFinished(s.remoteFinished[:]); err != nil {
+		logHandshakePerfDetail(hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, "wait", "finished_wait_remote", time.Since(phaseStart), err)
 		return err
 	}
+	logHandshakePerfDetail(hs.localId, hs.remoteId, kaRole, kaSuite, hs.suite.id, s.handshakes+1, "wait", "finished_wait_remote", time.Since(phaseStart), nil)
 
 	// 标记握手已完成
 	s.isHandshakeComplete.Store(true)
@@ -313,38 +396,47 @@ func (hs *handshakeState) doFullHandshake() error {
 	// 要保证的是 hs 上的逻辑是统一的
 	// 但是内部 ka 上的逻辑是不用统一的
 	s := hs.s
+	role, suiteName, suiteID := hs.perfMeta()
 
 	// 必须为当前握手创建一个新实例（副本），
 	// 因为它包含 session 特有的状态（localId, remoteId, keys, ctxLocal 等）。
 	// 原 suite.ka 是全局单例，不能直接修改。
+	phaseStart := time.Now()
 	keyAgreement, err := hs.newKeyAgreement()
+	logHandshakePerfDetail(hs.localId, hs.remoteId, role, suiteName, suiteID, s.handshakes+1, "compute", "kxm_new_key_agreement", time.Since(phaseStart), err)
 	if err != nil {
 		return err
 	}
 	// 先发自己的 keyExchangeMsg
+	phaseStart = time.Now()
 	localKxm, err := keyAgreement.generateLocalKeyExchange(s.conn.config, hs.signatureScheme, hs.helloMsg, hs.remoteHelloMsg)
+	logHandshakePerfDetail(hs.localId, hs.remoteId, role, suiteName, suiteID, s.handshakes+1, "compute", "kxm_generate_local", time.Since(phaseStart), err)
 	if err != nil {
 		// s.out.setErrorLocked(errors.New("alertInternalError"))
 		// s.SetError(errors.New("alertInternalError"))
 		return err
 	}
 	if localKxm != nil {
+		phaseStart = time.Now()
+		var writeErr error
 		// 统一按 initiator(ID大) 先写入 transcript
 		if hs.localId > hs.remoteId {
 			// 本方是 initiator，直接写自己的 kxm 到 transcript
-			if err := s.writeHandshakeRecord(localKxm, &hs.finishedHash); err != nil {
-				return err
-			}
+			writeErr = s.writeHandshakeRecord(localKxm, &hs.finishedHash)
 		} else {
 			// 本方是 responder，先发送但不写 transcript（等读到 initiator kxm 后再统一）
-			if err := s.writeHandshakeRecord(localKxm, nil); err != nil {
-				return err
-			}
+			writeErr = s.writeHandshakeRecord(localKxm, nil)
+		}
+		logHandshakePerfDetail(hs.localId, hs.remoteId, role, suiteName, suiteID, s.handshakes+1, "send", "kxm_write_local", time.Since(phaseStart), writeErr)
+		if writeErr != nil {
+			return writeErr
 		}
 	}
 
 	// 再收对方的 keyExchangeMsg
+	phaseStart = time.Now()
 	msg, err := s.readHandshake(nil) // 不写 transcript，手动控制顺序
+	logHandshakePerfDetail(hs.localId, hs.remoteId, role, suiteName, suiteID, s.handshakes+1, "wait", "kxm_wait_remote", time.Since(phaseStart), err)
 	if err != nil {
 		return err
 	}
@@ -370,7 +462,9 @@ func (hs *handshakeState) doFullHandshake() error {
 
 	var preMasterSecret []byte
 	if ok {
+		phaseStart = time.Now()
 		preMasterSecret, err = keyAgreement.processRemoteKeyExchange(s.conn.config, hs.signatureScheme, hs.helloMsg, hs.remoteHelloMsg, remoteKxm)
+		logHandshakePerfDetail(hs.localId, hs.remoteId, role, suiteName, suiteID, s.handshakes+1, "compute", "kxm_process_remote", time.Since(phaseStart), err)
 		if err != nil {
 			return err
 		}
@@ -390,7 +484,9 @@ func (hs *handshakeState) doFullHandshake() error {
 		initiatorRandom = hs.remoteHelloMsg.random
 		responderRandom = hs.helloMsg.random
 	}
+	phaseStart = time.Now()
 	hs.masterSecret = masterFromPreMasterSecret(s.vers, hs.suite, preMasterSecret, initiatorRandom, responderRandom)
+	logHandshakePerfDetail(hs.localId, hs.remoteId, role, suiteName, suiteID, s.handshakes+1, "compute", "master_secret_derive", time.Since(phaseStart), nil)
 
 	// hs.finishedHash.discardHandshakeBuffer()
 
